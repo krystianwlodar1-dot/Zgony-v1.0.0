@@ -1,3 +1,4 @@
+PVP_WEBHOOK = os.getenv("PVP_WEBHOOK")
 import requests
 from bs4 import BeautifulSoup
 import discord
@@ -88,7 +89,13 @@ async def check_deaths():
                     color=0x00FF00 if is_pvp else 0xFF0000
                 )
 
-                await channel.send(embed=embed)
+                if is_pvp and PVP_WEBHOOK:
+    requests.post(PVP_WEBHOOK, json={
+        "embeds": [embed.to_dict()]
+    })
+else:
+    await channel.send(embed=embed)
+
 
     except Exception as e:
         print("Błąd:", e)
