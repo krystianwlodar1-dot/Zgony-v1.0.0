@@ -1,19 +1,23 @@
 import requests
 import discord
 from discord.ext import tasks, commands
+from bs4 import BeautifulSoup
 import json
 import os
+import re
 
-# -------------------------
+# ================================
 # ENV
-# -------------------------
+# ================================
 TOKEN = os.getenv("DISCORD_TOKEN")
 CHANNEL_ID = int(os.getenv("DISCORD_CHANNEL_ID"))
 PVP_WEBHOOK = os.getenv("PVP_WEBHOOK")
 
-# -------------------------
-# Twoje postacie
-# -------------------------
+URL = "https://cyleria.pl/index.php?subtopic=killstatistics"
+
+# ================================
+# TWOJE POSTACIE
+# ================================
 characters = [
     "Agnieszka",
     "Miekka Parowka",
@@ -28,29 +32,29 @@ characters = [
     "Corcia Tatulcia"
 ]
 
-# -------------------------
-# Historia zgonów
-# -------------------------
+# ================================
+# HISTORIA
+# ================================
 if os.path.exists("zgony1.json"):
     with open("zgony1.json", "r") as f:
         last_deaths = set(json.load(f))
 else:
     last_deaths = set()
 
-# -------------------------
-# Discord
-# -------------------------
+# ================================
+# DISCORD
+# ================================
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
-    print("Zgony1 online")
+    print("ZGONY1 ONLINE")
 
     channel = bot.get_channel(CHANNEL_ID)
     if channel:
         embed = discord.Embed(
-            title="🤖 Zgony1 uruchomiony",
+            title="🟢 ZGONY1 wystartował",
             description="Bot monitoruje zgony Twoich postaci na Cylerii.",
             color=0x00FF00
         )
@@ -58,65 +62,91 @@ async def on_ready():
 
     check_deaths.start()
 
-# -------------------------
-# Main loop
-# -------------------------
+# ================================
+# PARSER
+# ================================
+def parse_row(text):
+    # Przykład:
+    # Kasai śmierć na poziomie 1027 przez a burning hunter, an ancient dragon, Veduque
+    m = re.search(r"(.+?) śmierć na poziomie (\d+) przez (.+)", text)
+    if not m:
+        return None
+
+    return {
+        "nick": m.group(1).strip(),
+        "level": m.group(2),
+        "killers": m.group(3).strip()
+    }
+
+# ================================
+# LOOP
+# ================================
 @tasks.loop(minutes=1)
 async def check_deaths():
-    url = "https://cyleria.pl/ajax/killstatistics.php"
-
     try:
-        data = requests.get(url, timeout=10).json()
+        html = requests.get(URL, timeout=10).text
+        soup = BeautifulSoup(html, "html.parser")
+
+        table = soup.find("table")
+        if not table:
+            print("Nie znaleziono tabeli zgonów")
+            return
+
+        rows = table.find_all("tr")[1:]  # pomijamy nagłówek
         channel = bot.get_channel(CHANNEL_ID)
 
-        for entry in data:
-            try:
-                nick = entry["player"]
-                level = str(entry["level"])
-                killers = entry["killed_by"]
+        for row in rows:
+            text = row.get_text(" ", strip=True)
+            data = parse_row(text)
 
-                if nick not in characters:
-                    continue
+            if not data:
+                continue
 
-                death_id = f"{nick}-{level}-{killers}"
-                if death_id in last_deaths:
-                    continue
+            nick = data["nick"]
+            level = data["level"]
+            killers = data["killers"]
 
-                last_deaths.add(death_id)
+            if nick not in characters:
+                continue
 
-                is_pvp = "White Skull" in killers or "Black Skull" in killers or "Red Skull" in killers
+            death_id = f"{nick}-{level}-{killers}"
+            if death_id in last_deaths:
+                continue
 
-                nick_colored = f"🟢 **{nick}**"
+            last_deaths.add(death_id)
 
-                killer_list = []
-                for k in killers.replace(" oraz ", ", ").split(","):
-                    k = k.strip()
-                    if "White Skull" in k or "Black Skull" in k or "Red Skull" in k:
-                        killer_list.append(f"🔴 **{k}**")
-                    else:
-                        killer_list.append(k)
+            is_pvp = any(x in killers for x in ["White Skull", "Black Skull", "Red Skull"])
 
-                killers_formatted = ", ".join(killer_list)
+            nick_display = f"🟢 **{nick}**"
 
-                embed = discord.Embed(
-                    title="💀 ZGON POSTACI",
-                    description=f"{nick_colored} poległ na poziomie **{level}**\n\n**Zabójcy:** {killers_formatted}",
-                    color=0x00FF00 if is_pvp else 0xFF0000
-                )
+            killer_parts = killers.replace(" oraz ", ", ").split(",")
+            formatted_killers = []
 
-                if is_pvp and PVP_WEBHOOK:
-                    requests.post(PVP_WEBHOOK, json={"embeds":[embed.to_dict()]})
+            for k in killer_parts:
+                k = k.strip()
+                if any(x in k for x in ["White Skull", "Black Skull", "Red Skull"]):
+                    formatted_killers.append(f"🔴 **{k}**")
                 else:
-                    await channel.send(embed=embed)
+                    formatted_killers.append(k)
 
-            except:
-                pass
+            killers_display = ", ".join(formatted_killers)
 
-        with open("zgony1.json","w") as f:
+            embed = discord.Embed(
+                title="💀 ZGON",
+                description=f"{nick_display} poległ na poziomie **{level}**\n\n**Zabójcy:** {killers_display}",
+                color=0x00FF00 if is_pvp else 0xFF0000
+            )
+
+            if is_pvp and PVP_WEBHOOK:
+                requests.post(PVP_WEBHOOK, json={"embeds": [embed.to_dict()]})
+            else:
+                await channel.send(embed=embed)
+
+        with open("zgony1.json", "w") as f:
             json.dump(list(last_deaths), f)
 
     except Exception as e:
-        print("API error:", e)
+        print("Błąd:", e)
 
-# -------------------------
+# ================================
 bot.run(TOKEN)
