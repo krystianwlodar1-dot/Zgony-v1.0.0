@@ -2,29 +2,28 @@ import requests
 from bs4 import BeautifulSoup
 import discord
 from discord.ext import tasks, commands
-import asyncio
 import json
 import os
 
-TOKEN = os.getenv("DISCORD_TOKEN")  # Discord token z Railway secrets
-CHANNEL_ID = int(os.getenv("DISCORD_CHANNEL_ID"))  # ID kanału Discord
+TOKEN = os.getenv("DISCORD_TOKEN")
+CHANNEL_ID = int(os.getenv("DISCORD_CHANNEL_ID"))
 
 characters = {
-    "Agnieszka": "https://cyleria.pl/index.php?subtopic=characters&name=Agnieszka",
-    "Miekka Parowka": "https://cyleria.pl/index.php?subtopic=characters&name=Miekka+Parowka",
-    "Gazowany Kompot": "https://cyleria.pl/index.php?subtopic=characters&name=Gazowany+Kompot",
-    "Negocjator": "https://cyleria.pl/index.php?subtopic=characters&name=Negocjator",
-    "Negocjatorka": "https://cyleria.pl/index.php?subtopic=characters&name=Negocjatorka",
-    "Astma": "https://cyleria.pl/index.php?subtopic=characters&name=Astma",
-    "Jestem Karma": "https://cyleria.pl/index.php?subtopic=characters&name=Jestem Karma",
-    "Pan Trezer": "https://cyleria.pl/index.php?subtopic=characters&name=Pan Trezer",
-    "Mistrz Negocjacji": "https://cyleria.pl/index.php?subtopic=characters&name=Mistrz+Negocjacji"
+    "Agnieszka": "",
+    "Miekka Parowka": "",
+    "Gazowany Kompot": "",
+    "Negocjator": "",
+    "Negocjatorka": "",
+    "Astma": "",
+    "Jestem Karma": "",
+    "Pan Trezer": "",
+    "Mistrz Negocjacji": "",
+    "Gohumag": ""
 }
 
-# Wczytanie poprzednich zgonów z pliku
 if os.path.exists("deaths.json"):
     with open("deaths.json", "r") as f:
-        last_deaths = set(tuple(d) for d in json.load(f))
+        last_deaths = set(json.load(f))
 else:
     last_deaths = set()
 
@@ -33,50 +32,65 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
-    print(f'Zalogowano jako {bot.user}')
+    print("Bot działa!")
     check_deaths.start()
 
 @tasks.loop(minutes=1)
 async def check_deaths():
     url = "https://cyleria.pl/index.php?subtopic=killstatistics"
-    try:
-        r = requests.get(url)
-        r.raise_for_status()
-        soup = BeautifulSoup(r.text, 'html.parser')
 
-        # Wyszukujemy wszystkie wiersze tabeli zgonów
-        death_rows = soup.select("table.TableContent tr")[1:]  # pomijamy nagłówek
+    try:
+        r = requests.get(url, timeout=15)
+        soup = BeautifulSoup(r.text, "html.parser")
+        text = soup.get_text("\n")
+
         new_deaths = []
 
-        for row in death_rows:
-            cols = row.find_all("td")
-            if len(cols) < 3:
-                continue
+        for name in characters:
+            for line in text.split("\n"):
+                if name in line and "śmierć na poziomie" in line:
+                    try:
+                        part1, killers = line.split(" przez ", 1)
+                        nick, level = part1.split(" śmierć na poziomie ")
 
-            char_name = cols[0].text.strip()
-            killer_info = cols[1].text.strip()
-            level_info = cols[2].text.strip()
+                        death_id = f"{nick}-{level}-{killers}"
 
-            if char_name in characters and (char_name, killer_info, level_info) not in last_deaths:
-                last_deaths.add((char_name, killer_info, level_info))
-                new_deaths.append((char_name, killer_info, level_info))
+                        if death_id not in last_deaths:
+                            last_deaths.add(death_id)
+                            new_deaths.append((nick.strip(), level.strip(), killers.strip()))
+                    except:
+                        pass
 
-        # Zapisujemy zgony do pliku
         with open("deaths.json", "w") as f:
-            json.dump([list(d) for d in last_deaths], f)
+            json.dump(list(last_deaths), f)
 
-        # Wysyłamy embed na Discord
         if new_deaths:
             channel = bot.get_channel(CHANNEL_ID)
-            for char_name, killer_info, level_info in new_deaths:
+
+            for nick, level, killers in new_deaths:
+                is_pvp = "White Skull" in killers or "Black Skull" in killers or "Red Skull" in killers
+
+                nick_colored = f"🟢 **{nick}**"
+
+                killer_lines = []
+                for k in killers.replace(" oraz ", ", ").split(","):
+                    k = k.strip()
+                    if "White Skull" in k or "Black Skull" in k or "Red Skull" in k:
+                        killer_lines.append(f"🔴 **{k}**")
+                    else:
+                        killer_lines.append(k)
+
+                killers_formatted = ", ".join(killer_lines)
+
                 embed = discord.Embed(
-                    title="💀 Postać pokonana!",
-                    description=f'**{char_name}** pokonany(a) na poziomie **{level_info}** przez **{killer_info}**',
-                    color=0xff0000
+                    title="💀 Śmierć postaci!",
+                    description=f"{nick_colored} poległ na poziomie **{level}**\n\n**Zabójcy:** {killers_formatted}",
+                    color=0x00FF00 if is_pvp else 0xFF0000
                 )
+
                 await channel.send(embed=embed)
 
     except Exception as e:
-        print("Błąd podczas sprawdzania zgonów:", e)
+        print("Błąd:", e)
 
 bot.run(TOKEN)
